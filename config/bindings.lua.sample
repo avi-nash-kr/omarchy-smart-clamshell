@@ -1,0 +1,11 @@
+-- ~/.config/hypr/bindings.lua addition for omarchy-smart-clamshell
+
+-- Override lid switch handlers to support seamless clamshell mode with mirroring & workspace migration
+hl.unbind("switch:on:Lid Switch")
+hl.unbind("switch:off:Lid Switch")
+o.bind("switch:on:Lid Switch", nil, os.getenv("HOME") .. "/.local/bin/omarchy-system-lid-close", { locked = true })
+o.bind("switch:off:Lid Switch", nil, os.getenv("HOME") .. "/.local/bin/omarchy-hyprland-monitor-clamshell", { locked = true })
+
+-- Override display mirror toggle to use persistent display-mode manager
+hl.unbind("SUPER + CTRL + ALT + Delete")
+o.bind("SUPER + CTRL + ALT + Delete", "Toggle display mode", os.getenv("HOME") .. "/.local/bin/display-mode toggle")

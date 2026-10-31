@@ -1,0 +1,273 @@
+#!/bin/bash
+
+# omarchy:summary=Apply clamshell display state to Hyprland monitors (with mirror pause & workspace migration)
+# omarchy:hidden=true
+
+TOGGLES_DIR="$HOME/.local/state/omarchy/toggles/hypr"
+CLAMSHELL_FLAG="$TOGGLES_DIR/internal-monitor-clamshell.lua"
+MANUAL_DISABLE_FLAG="$TOGGLES_DIR/internal-monitor-disable.lua"
+SCALE_STATE="$TOGGLES_DIR/internal-monitor-scale"
+MONITOR_LUA="$HOME/.config/hypr/monitors.lua"
+MIRROR_FLAG="$TOGGLES_DIR/internal-monitor-mirror.lua"
+MIRROR_PAUSED_FLAG="$TOGGLES_DIR/internal-monitor-mirror.lua.clamshell-paused"
+
+INTERNAL=$(omarchy-hyprland-monitor-laptop)
+
+if [[ -n $INTERNAL && ! $INTERNAL =~ ^[A-Za-z0-9._-]+$ ]]; then
+  echo "Refusing unsafe internal monitor name" >&2
+  exit 1
+fi
+
+valid_scale() {
+  [[ $1 =~ ^[0-9]+([.][0-9]+)?$ ]]
+}
+
+scales_match() {
+  local left="$1"
+  local right="$2"
+
+  valid_scale "$left" && valid_scale "$right" || return 1
+  awk -v left="$left" -v right="$right" 'BEGIN {
+    diff = left - right
+    if (diff < 0) diff = -diff
+    exit(diff < 0.001 ? 0 : 1)
+  }'
+}
+
+lua_identifier() {
+  [[ $1 =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]
+}
+
+lua_local_value() {
+  local name="$1" value
+  lua_identifier "$name" && [[ -f $MONITOR_LUA ]] || return 0
+
+  value=$(sed -nE 's/^[[:space:]]*local[[:space:]]+'"$name"'[[:space:]]*=[[:space:]]*("[^"]*"|[^"[:space:]]+)[[:space:]]*(--.*)?$/\1/p' "$MONITOR_LUA" | head -1)
+  [[ $value == \"*\" ]] && value="${value:1:-1}"
+  printf '%s\n' "$value"
+}
+
+lua_scalar() {
+  local value="$1" resolved
+
+  if [[ $value == \"*\" ]]; then
+    printf '%s\n' "${value:1:-1}"
+    return
+  fi
+
+  resolved=$(lua_local_value "$value")
+  printf '%s\n' "${resolved:-$value}"
+}
+
+monitor_rules() {
+  [[ -f $MONITOR_LUA ]] || return 0
+
+  sed -E -e 's/--\[\[[^]]*\]\]//g' -e 's/--.*$//' "$MONITOR_LUA"
+}
+
+monitor_rule_regex() {
+  printf '^[[:space:]]*hl\\.monitor\\(\\{.*output[[:space:]]*=[[:space:]]*"%s"' "$1"
+}
+
+configured_monitor_value() {
+  local output="$1" key="$2" value
+
+  value=$(monitor_rules | sed -nE '/'"$(monitor_rule_regex "$output")"'/s/.*[{,;[:space:]]'"$key"'[[:space:]]*=[[:space:]]*("[^"]*"|[^,;}[:space:]]+)[[:space:]]*([,;}].*)?$/\1/p' | head -1)
+  lua_scalar "$value"
+}
+
+configured_internal_monitor_value() {
+  [[ -n $INTERNAL ]] || return 0
+
+  configured_monitor_value "$INTERNAL" "$1"
+}
+
+configured_monitor_scale() {
+  local scale
+  scale=$(configured_internal_monitor_value scale)
+  [[ -n $scale ]] || scale=$(configured_monitor_value "" scale)
+  [[ -n $scale ]] || scale=$(lua_local_value omarchy_monitor_scale)
+
+  printf '%s\n' "$scale"
+}
+
+current_internal_scale() {
+  [[ -n $INTERNAL ]] || return 0
+  hyprctl monitors all -j | jq -r --arg internal "$INTERNAL" '.[] | select(.name == $internal and .disabled != true) | .scale' | head -1
+}
+
+store_internal_scale() {
+  local scale="$1"
+  valid_scale "$scale" || return 0
+
+  mkdir -p "$TOGGLES_DIR"
+  printf '%s\n' "$scale" >"$SCALE_STATE"
+}
+
+remember_internal_scale() {
+  local scale
+  scale=$(current_internal_scale)
+  store_internal_scale "$scale"
+}
+
+read_monitor_scale() {
+  local scale
+
+  if (( $# )); then
+    scale="$1"
+  else
+    scale=$(configured_monitor_scale)
+  fi
+
+  if valid_scale "$scale"; then
+    echo "$scale"
+    return
+  fi
+
+  if [[ -f $SCALE_STATE ]]; then
+    scale=$(<"$SCALE_STATE")
+    if valid_scale "$scale"; then
+      echo "$scale"
+      return
+    fi
+  fi
+
+  echo 2
+}
+
+read_monitor_position() {
+  local position
+  position=$(configured_internal_monitor_value position)
+  if [[ $position =~ ^[-[:alnum:]_.+]+$ ]]; then
+    echo "$position"
+    return
+  fi
+
+  echo auto
+}
+
+enable_internal_output() {
+  [[ -n $INTERNAL ]] || return 0
+  local scale="${1:-}"
+  local position
+  [[ -n $scale ]] || scale=$(read_monitor_scale)
+  position=$(read_monitor_position)
+  hyprctl eval "hl.monitor({ output = \"$INTERNAL\", mode = \"preferred\", position = \"$position\", scale = $scale })" >/dev/null 2>&1 || true
+}
+
+sync_internal_scale() {
+  [[ -n $INTERNAL ]] || return 0
+  local configured_scale
+  local desired_scale
+  local active_scale
+
+  configured_scale=$(configured_monitor_scale)
+  active_scale=$(current_internal_scale)
+
+  if ! valid_scale "$configured_scale" && valid_scale "$active_scale"; then
+    return 0
+  fi
+
+  desired_scale=$(read_monitor_scale "$configured_scale")
+  scales_match "$active_scale" "$desired_scale" && return 0
+
+  enable_internal_output "$desired_scale"
+}
+
+dpms_internal() {
+  local action="$1"
+
+  [[ -n $INTERNAL ]] || return 0
+  hyprctl dispatch "hl.dsp.dpms({ action = \"$action\", monitor = \"$INTERNAL\" })" >/dev/null 2>&1 || true
+}
+
+enable_internal() {
+  # Remove clamshell flag
+  if [[ -f $CLAMSHELL_FLAG ]]; then
+    rm -f "$CLAMSHELL_FLAG"
+  fi
+
+  # Explicitly re-enable internal output
+  hyprctl eval "hl.monitor({ output = '$INTERNAL', disabled = false, mode = 'preferred', position = '0x0', scale = 1 })" >/dev/null 2>&1 || true
+
+  # Move workspaces back to internal monitor
+  if [[ -n $INTERNAL ]]; then
+    sleep 0.1
+    hyprctl eval "hl.dispatch(hl.dsp.workspace.move({ monitor = '$INTERNAL' }))" >/dev/null 2>&1 || true
+  fi
+
+  # Restore mirror flag if it was paused
+  if [[ -f $MIRROR_PAUSED_FLAG ]]; then
+    mv -f "$MIRROR_PAUSED_FLAG" "$MIRROR_FLAG"
+  fi
+
+  hyprctl reload >/dev/null 2>&1 || true
+
+  [[ -f $MANUAL_DISABLE_FLAG ]] && omarchy-hyprland-monitor-external-active && return 0
+  sync_internal_scale
+
+  dpms_internal enable
+}
+
+disable_internal() {
+  [[ -n $INTERNAL ]] || exit 0
+  [[ -f $MANUAL_DISABLE_FLAG ]] && return 0
+
+  mkdir -p "$TOGGLES_DIR"
+  remember_internal_scale
+
+  local EXTERNAL
+  EXTERNAL=$(hyprctl monitors all -j 2>/dev/null | jq -r '.[] | select(.name | test("^(eDP|LVDS|DSI)-") | not).name' | head -n 1)
+
+  local active_ws
+  active_ws=$(hyprctl monitors -j 2>/dev/null | jq -r --arg internal "$INTERNAL" '.[] | select(.name == $internal) | .activeWorkspace.id' 2>/dev/null)
+
+  # Pause mirroring so external monitor is an active standalone display
+  if [[ -f $MIRROR_FLAG ]]; then
+    mv -f "$MIRROR_FLAG" "$MIRROR_PAUSED_FLAG"
+  fi
+
+  # Explicitly disable internal panel and configure external monitor
+  local config
+  config=$(printf 'hl.monitor({ output = "%s", disabled = true })\n' "$INTERNAL")
+  if [[ -n $EXTERNAL ]]; then
+    config+=$(printf 'hl.monitor({ output = "%s", mode = "preferred", position = "0x0", scale = 1 })\n' "$EXTERNAL")
+  fi
+
+  printf '%s\n' "$config" >"$CLAMSHELL_FLAG"
+  hyprctl reload >/dev/null 2>&1 || true
+
+  # Migrate all workspaces to external monitor
+  if [[ -n $EXTERNAL ]]; then
+    sleep 0.2
+    hyprctl eval "hl.dispatch(hl.dsp.workspace.move({ monitor = '$EXTERNAL' }))" >/dev/null 2>&1 || true
+    if [[ -n $active_ws && $active_ws != "null" && $active_ws =~ ^[0-9]+$ && $active_ws -gt 0 ]]; then
+      hyprctl dispatch "hl.dsp.focus({ workspace = '$active_ws' })" >/dev/null 2>&1 || true
+    fi
+  fi
+}
+
+# If external monitor was unplugged while mirror was paused, clean up the paused state
+if [[ -f $MIRROR_PAUSED_FLAG ]] && ! omarchy-hw-external-monitors; then
+  rm -f "$MIRROR_PAUSED_FLAG"
+fi
+
+omarchy-hyprland-monitor-internal recover >/dev/null 2>&1 || true
+omarchy-hyprland-monitor-internal-mirror recover >/dev/null 2>&1 || true
+
+case "$1" in
+  disable)
+    disable_internal
+    exit 0
+    ;;
+  enable)
+    enable_internal
+    exit 0
+    ;;
+esac
+
+if omarchy-hw-clamshell && omarchy-hyprland-monitor-external-active; then
+  disable_internal
+else
+  enable_internal
+fi

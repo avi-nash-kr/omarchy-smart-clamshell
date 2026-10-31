@@ -1,0 +1,93 @@
+#!/bin/bash
+
+# display-mode: Manage monitor profile (mirror vs extended) with persistent preference
+
+CONFIG_DIR="$HOME/.config/omarchy"
+CONFIG_FILE="$CONFIG_DIR/display-mode.conf"
+TOGGLES_DIR="$HOME/.local/state/omarchy/toggles/hypr"
+MIRROR_FLAG="$TOGGLES_DIR/internal-monitor-mirror.lua"
+MIRROR_PAUSED_FLAG="$TOGGLES_DIR/internal-monitor-mirror.lua.clamshell-paused"
+
+mkdir -p "$CONFIG_DIR"
+
+current_mode() {
+  if [[ -f $MIRROR_FLAG || -f $MIRROR_PAUSED_FLAG ]]; then
+    echo "mirror"
+  else
+    echo "extended"
+  fi
+}
+
+set_mirror() {
+  echo "mode=mirror" > "$CONFIG_FILE"
+  if command -v omarchy-hw-clamshell >/dev/null 2>&1 && omarchy-hw-clamshell; then
+    # Lid is closed: prepare paused flag so mirror takes effect when lid opens
+    if [[ ! -f $MIRROR_PAUSED_FLAG && -f $MIRROR_FLAG ]]; then
+      mv -f "$MIRROR_FLAG" "$MIRROR_PAUSED_FLAG"
+    elif [[ ! -f $MIRROR_PAUSED_FLAG ]]; then
+      INTERNAL=$(omarchy-hyprland-monitor-laptop)
+      EXTERNAL=$(hyprctl monitors -j 2>/dev/null | jq -r '.[] | select(.name | test("^(eDP|LVDS|DSI)-") | not).name' | head -n 1)
+      if [[ -n $EXTERNAL && -n $INTERNAL ]]; then
+        printf 'hl.monitor({ output = "%s", mode = "preferred", position = "auto", scale = 1, mirror = "%s" })\n' "$EXTERNAL" "$INTERNAL" > "$MIRROR_PAUSED_FLAG"
+      fi
+    fi
+  else
+    # Lid is open: enable mirror immediately
+    rm -f "$MIRROR_PAUSED_FLAG"
+    omarchy-hyprland-monitor-internal-mirror on
+  fi
+  if command -v omarchy-notification-send >/dev/null 2>&1; then
+    omarchy-notification-send -g 󰍹 "Display Mode: Mirror (Duplicated display)"
+  fi
+  echo "Display mode set to: mirror"
+}
+
+set_extended() {
+  echo "mode=extended" > "$CONFIG_FILE"
+  rm -f "$MIRROR_PAUSED_FLAG"
+  if [[ -f $MIRROR_FLAG ]]; then
+    omarchy-hyprland-monitor-internal-mirror off
+  else
+    hyprctl reload >/dev/null 2>&1 || true
+  fi
+  if command -v omarchy-notification-send >/dev/null 2>&1; then
+    omarchy-notification-send -g 󰍹 "Display Mode: Extended (Independent displays)"
+  fi
+  echo "Display mode set to: extended"
+}
+
+toggle_mode() {
+  if [[ $(current_mode) == "mirror" ]]; then
+    set_extended
+  else
+    set_mirror
+  fi
+}
+
+status_mode() {
+  local mode
+  mode=$(current_mode)
+  echo "Current display mode: $mode"
+  if [[ -f $CONFIG_FILE ]]; then
+    echo "Persisted setting: $(cat "$CONFIG_FILE")"
+  fi
+}
+
+case "$1" in
+  mirror|on)
+    set_mirror
+    ;;
+  extended|off)
+    set_extended
+    ;;
+  toggle)
+    toggle_mode
+    ;;
+  status|"")
+    status_mode
+    ;;
+  *)
+    echo "Usage: display-mode {mirror|extended|toggle|status}"
+    exit 1
+    ;;
+esac

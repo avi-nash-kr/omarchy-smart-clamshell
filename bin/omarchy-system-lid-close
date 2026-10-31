@@ -1,0 +1,11 @@
+#!/bin/bash
+
+# omarchy:summary=Lock and reconcile displays when the laptop lid closes (with mirror pause support)
+# omarchy:group=system
+# omarchy:hidden=true
+
+if command -v omarchy-hw-laptop-closed >/dev/null 2>&1 && omarchy-hw-laptop-closed && ! omarchy-hw-external-monitors; then
+  omarchy-system-lock >/dev/null 2>&1 || true
+fi
+
+"$HOME/.local/bin/omarchy-hyprland-monitor-clamshell"
