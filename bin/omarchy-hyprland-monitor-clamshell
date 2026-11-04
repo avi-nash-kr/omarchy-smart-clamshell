@@ -10,6 +10,10 @@ SCALE_STATE="$TOGGLES_DIR/internal-monitor-scale"
 MONITOR_LUA="$HOME/.config/hypr/monitors.lua"
 MIRROR_FLAG="$TOGGLES_DIR/internal-monitor-mirror.lua"
 MIRROR_PAUSED_FLAG="$TOGGLES_DIR/internal-monitor-mirror.lua.clamshell-paused"
+# Our own extra toggle: configures the external monitor as standalone (not mirrored)
+# when clamshell is active. Separate from CLAMSHELL_FLAG so the system script can
+# manage the eDP disable independently without overwriting our HDMI config.
+HDMI_FLAG="$TOGGLES_DIR/internal-monitor-clamshell-hdmi.lua"
 
 INTERNAL=$(omarchy-hyprland-monitor-laptop)
 
@@ -42,7 +46,7 @@ lua_local_value() {
   local name="$1" value
   lua_identifier "$name" && [[ -f $MONITOR_LUA ]] || return 0
 
-  value=$(sed -nE 's/^[[:space:]]*local[[:space:]]+'"$name"'[[:space:]]*=[[:space:]]*("[^"]*"|[^"[:space:]]+)[[:space:]]*(--.*)?$/\1/p' "$MONITOR_LUA" | head -1)
+  value=$(sed -nE 's/^[[:space:]]*local[[:space:]]+'\"$name\"'[[:space:]]*=[[:space:]]*(\"[^\"]*\"|[^\"[:space:]]+)[[:space:]]*(--.*)?$/\1/p' "$MONITOR_LUA" | head -1)
   [[ $value == \"*\" ]] && value="${value:1:-1}"
   printf '%s\n' "$value"
 }
@@ -72,7 +76,7 @@ monitor_rule_regex() {
 configured_monitor_value() {
   local output="$1" key="$2" value
 
-  value=$(monitor_rules | sed -nE '/'"$(monitor_rule_regex "$output")"'/s/.*[{,;[:space:]]'"$key"'[[:space:]]*=[[:space:]]*("[^"]*"|[^,;}[:space:]]+)[[:space:]]*([,;}].*)?$/\1/p' | head -1)
+  value=$(monitor_rules | sed -nE '/'\"$(monitor_rule_regex "$output")\"'/s/.*[{,;[:space:]]'\"$key\"'[[:space:]]*=[[:space:]]*(\"[^\"]*\"|[^,;}[:space:]]+)[[:space:]]*([,;}].*)?$/\1/p' | head -1)
   lua_scalar "$value"
 }
 
@@ -182,31 +186,36 @@ dpms_internal() {
 }
 
 enable_internal() {
-  # Remove clamshell flag
+  local changed=0
+
+  # Clean up our HDMI standalone flag
+  if [[ -f $HDMI_FLAG ]]; then
+    rm -f "$HDMI_FLAG"
+    changed=1
+  fi
+
+  # Remove clamshell flag if present
   if [[ -f $CLAMSHELL_FLAG ]]; then
     rm -f "$CLAMSHELL_FLAG"
+    changed=1
   fi
 
-  # Explicitly re-enable internal output
-  hyprctl eval "hl.monitor({ output = '$INTERNAL', disabled = false, mode = 'preferred', position = '0x0', scale = 1 })" >/dev/null 2>&1 || true
-
-  # Move workspaces back to internal monitor
-  if [[ -n $INTERNAL ]]; then
-    sleep 0.1
-    hyprctl eval "hl.dispatch(hl.dsp.workspace.move({ monitor = '$INTERNAL' }))" >/dev/null 2>&1 || true
-  fi
-
-  # Restore mirror flag if it was paused
+  # Restore mirror flag if it was paused by us
   if [[ -f $MIRROR_PAUSED_FLAG ]]; then
     mv -f "$MIRROR_PAUSED_FLAG" "$MIRROR_FLAG"
+    changed=1
   fi
 
-  hyprctl reload >/dev/null 2>&1 || true
+  if (( changed )); then
+    hyprctl reload >/dev/null 2>&1 || true
+  fi
 
   [[ -f $MANUAL_DISABLE_FLAG ]] && omarchy-hyprland-monitor-external-active && return 0
   sync_internal_scale
 
-  dpms_internal enable
+  if (( changed )); then
+    dpms_internal enable
+  fi
 }
 
 disable_internal() {
@@ -218,42 +227,47 @@ disable_internal() {
 
   local EXTERNAL
   EXTERNAL=$(hyprctl monitors all -j 2>/dev/null | jq -r '.[] | select(.name | test("^(eDP|LVDS|DSI)-") | not).name' | head -n 1)
+  if [[ -z $EXTERNAL || ! $EXTERNAL =~ ^[A-Za-z0-9._-]+$ ]]; then
+    return 0
+  fi
 
-  local active_ws
-  active_ws=$(hyprctl monitors -j 2>/dev/null | jq -r --arg internal "$INTERNAL" '.[] | select(.name == $internal) | .activeWorkspace.id' 2>/dev/null)
-
-  # Pause mirroring so external monitor is an active standalone display
+  # Pause mirroring: rename mirror flag so HDMI-A-1 becomes a standalone display
   if [[ -f $MIRROR_FLAG ]]; then
     mv -f "$MIRROR_FLAG" "$MIRROR_PAUSED_FLAG"
   fi
 
-  # Explicitly disable internal panel and configure external monitor
-  local config
-  config=$(printf 'hl.monitor({ output = "%s", disabled = true })\n' "$INTERNAL")
-  if [[ -n $EXTERNAL ]]; then
-    config+=$(printf 'hl.monitor({ output = "%s", mode = "preferred", position = "0x0", scale = 1 })\n' "$EXTERNAL")
-  fi
+  # Write our HDMI standalone config as a SEPARATE toggle file (not CLAMSHELL_FLAG).
+  # Because the system clamshell script only manages CLAMSHELL_FLAG (eDP-1 disabled),
+  # it cannot overwrite this file. HDMI-A-1 stays configured as standalone even
+  # across sleep/wake cycles when the system script re-runs disable_internal().
+  printf 'hl.monitor({ output = "%s", mode = "preferred", position = "0x0", scale = 1 })\n' \
+    "$EXTERNAL" >"$HDMI_FLAG"
 
-  printf '%s\n' "$config" >"$CLAMSHELL_FLAG"
+  # Write CLAMSHELL_FLAG to match EXACTLY what the system script would write.
+  # This makes the system script's idempotency check pass on subsequent runs
+  # (sleep/wake), so it won't trigger a reload that could disturb workspaces.
+  local edp_config
+  edp_config=$(printf 'hl.monitor({ output = "%s", disabled = true })' "$INTERNAL")
+  printf '%s\n' "$edp_config" >"$CLAMSHELL_FLAG"
+
+  # Reload: Hyprland auto-migrates all workspaces from the disabled eDP-1
+  # to HDMI-A-1 (the only remaining active monitor). No manual migration needed.
   hyprctl reload >/dev/null 2>&1 || true
-
-  # Migrate all workspaces to external monitor
-  if [[ -n $EXTERNAL ]]; then
-    sleep 0.2
-    hyprctl eval "hl.dispatch(hl.dsp.workspace.move({ monitor = '$EXTERNAL' }))" >/dev/null 2>&1 || true
-    if [[ -n $active_ws && $active_ws != "null" && $active_ws =~ ^[0-9]+$ && $active_ws -gt 0 ]]; then
-      hyprctl dispatch "hl.dsp.focus({ workspace = '$active_ws' })" >/dev/null 2>&1 || true
-    fi
-  fi
 }
 
-# If external monitor was unplugged while mirror was paused, clean up the paused state
-if [[ -f $MIRROR_PAUSED_FLAG ]] && ! omarchy-hw-external-monitors; then
-  rm -f "$MIRROR_PAUSED_FLAG"
-fi
+# Only run recover calls when lid is OPEN.
+# When the lid is closed, skipping the recover calls prevents the system's
+# internal-mirror recover from wiping our MIRROR_PAUSED_FLAG during sleep/wake.
+if ! omarchy-hw-laptop-closed; then
+  # If external monitor was unplugged while mirror was paused, clean up paused state
+  if [[ -f $MIRROR_PAUSED_FLAG ]] && ! omarchy-hw-external-monitors; then
+    rm -f "$MIRROR_PAUSED_FLAG"
+    rm -f "$HDMI_FLAG"
+  fi
 
-omarchy-hyprland-monitor-internal recover >/dev/null 2>&1 || true
-omarchy-hyprland-monitor-internal-mirror recover >/dev/null 2>&1 || true
+  omarchy-hyprland-monitor-internal recover >/dev/null 2>&1 || true
+  omarchy-hyprland-monitor-internal-mirror recover >/dev/null 2>&1 || true
+fi
 
 case "$1" in
   disable)
