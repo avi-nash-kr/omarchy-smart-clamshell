@@ -240,7 +240,12 @@ disable_internal() {
   # Because the system clamshell script only manages CLAMSHELL_FLAG (eDP-1 disabled),
   # it cannot overwrite this file. HDMI-A-1 stays configured as standalone even
   # across sleep/wake cycles when the system script re-runs disable_internal().
-  printf 'hl.monitor({ output = "%s", mode = "preferred", position = "0x0", scale = 1 })\n' \
+  #
+  # Deliberately NO scale here: toggle files load AFTER ~/.config/hypr/monitors.lua,
+  # so pinning a scale would override whatever was set from the SUPER+CTRL+D monitor
+  # panel or `omarchy hyprland monitor scaling`. Leaving scale unspecified lets the
+  # monitors.lua rule own it.
+  printf 'hl.monitor({ output = "%s", mode = "preferred", position = "0x0" })\n' \
     "$EXTERNAL" >"$HDMI_FLAG"
 
   # Write CLAMSHELL_FLAG to match EXACTLY what the system script would write.

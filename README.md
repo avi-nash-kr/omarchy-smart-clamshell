@@ -74,6 +74,15 @@ display-mode toggle
 
 Press **`Super + Ctrl + Alt + Delete`** at any time to toggle between **Mirror** and **Extended** display modes on the fly.
 
+### Display Scale
+
+The external-monitor toggle file this project writes **does not pin a scale**.
+Files in `~/.local/state/omarchy/toggles/hypr/` load *after*
+`~/.config/hypr/monitors.lua`, so a hardcoded `scale = 1` there would silently
+override whatever you picked from the **`Super + Ctrl + D`** monitor panel or with
+`omarchy hyprland monitor scaling`. Scale is left to your `monitors.lua` rule, so
+panel, CLI, and manual edits keep working in clamshell mode and across reloads.
+
 ---
 
 ## 🏗️ Architecture
