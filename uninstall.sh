@@ -18,6 +18,8 @@ HOOKS_DIR="$HOME/.config/omarchy/hooks/post-boot.d"
 CONFIG_FILE="$HOME/.config/omarchy/display-mode.conf"
 HYPR_BINDINGS="$HOME/.config/hypr/bindings.lua"
 TOGGLES_DIR="$HOME/.local/state/omarchy/toggles/hypr"
+PLUGIN_ID="avinash-omarchy.clamshell"
+PLUGIN_DIR="$HOME/.config/omarchy/plugins/$PLUGIN_ID"
 
 echo -e "${BOLD}${BLUE}==> Uninstalling omarchy-smart-clamshell...${NC}"
 
@@ -32,6 +34,13 @@ echo -e "${BLUE}==> Removing hooks and configuration...${NC}"
 rm -f "$HOOKS_DIR/display-mode-sync.sh"
 rm -f "$CONFIG_FILE"
 rm -f "$TOGGLES_DIR/internal-monitor-mirror.lua.clamshell-paused"
+
+# 2b. Remove the Clamshell bar widget
+echo -e "${BLUE}==> Removing the Clamshell bar widget...${NC}"
+if command -v omarchy >/dev/null 2>&1; then
+  omarchy plugin disable "$PLUGIN_ID" >/dev/null 2>&1 || true
+fi
+rm -rf "$PLUGIN_DIR"
 
 # 3. Clean up Hyprland bindings
 if [[ -f "$HYPR_BINDINGS" ]]; then

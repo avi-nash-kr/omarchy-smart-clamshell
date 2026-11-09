@@ -18,6 +18,8 @@ BIN_DIR="$HOME/.local/bin"
 HOOKS_DIR="$HOME/.config/omarchy/hooks/post-boot.d"
 CONFIG_DIR="$HOME/.config/omarchy"
 HYPR_BINDINGS="$HOME/.config/hypr/bindings.lua"
+PLUGIN_ID="avinash-omarchy.clamshell"
+PLUGIN_DIR="$CONFIG_DIR/plugins/$PLUGIN_ID"
 
 echo -e "${BOLD}${BLUE}==> Installing omarchy-smart-clamshell...${NC}"
 
@@ -45,6 +47,30 @@ echo -e "${BLUE}==> Installing post-boot hook...${NC}"
 cp -f "$SCRIPT_DIR/hooks/display-mode-sync.sh" "$HOOKS_DIR/"
 chmod +x "$HOOKS_DIR/display-mode-sync.sh"
 
+# 3b. Install the Clamshell bar widget
+echo -e "${BLUE}==> Installing the Clamshell bar widget...${NC}"
+mkdir -p "$PLUGIN_DIR"
+cp -f "$SCRIPT_DIR/plugin/clamshell/"* "$PLUGIN_DIR/"
+
+if command -v omarchy >/dev/null 2>&1; then
+  # The shell rescans on file changes, but its discovery can lag a first install
+  # by a moment, so retry before giving up.
+  omarchy-shell -q shell rescanPlugins >/dev/null 2>&1 || true
+  enabled=0
+  for _ in 1 2 3 4 5; do
+    if omarchy plugin enable "$PLUGIN_ID" --after omarchy.monitor >/dev/null 2>&1; then
+      enabled=1
+      break
+    fi
+    sleep 0.5
+  done
+  if (( enabled )); then
+    echo -e "${GREEN}    Clamshell toggle added to the bar (right section).${NC}"
+  else
+    echo -e "${YELLOW}    Run 'omarchy plugin enable $PLUGIN_ID --after omarchy.monitor' once the shell is running.${NC}"
+  fi
+fi
+
 # 4. Initialize display mode configuration if absent
 if [[ ! -f "$CONFIG_DIR/display-mode.conf" ]]; then
   echo -e "${BLUE}==> Setting default display mode to 'mirror'...${NC}"
@@ -53,8 +79,8 @@ fi
 
 # 5. Patch Hyprland bindings
 if [[ -f "$HYPR_BINDINGS" ]]; then
-  if grep -q "omarchy-smart-clamshell" "$HYPR_BINDINGS"; then
-    echo -e "${YELLOW}==> Hyprland bindings already contain omarchy-smart-clamshell overrides. Skipping.${NC}"
+  if grep -q "omarchy-smart-clamshell\|omarchy-system-lid-close" "$HYPR_BINDINGS"; then
+    echo -e "${YELLOW}==> Hyprland bindings already override the lid switch. Skipping.${NC}"
   else
     echo -e "${BLUE}==> Updating $HYPR_BINDINGS (backup created)...${NC}"
     cp "$HYPR_BINDINGS" "${HYPR_BINDINGS}.bak.$(date +%s)"
@@ -91,4 +117,6 @@ echo -e "  • ${GREEN}display-mode status${NC}   - View current mode"
 echo -e "  • ${GREEN}display-mode mirror${NC}   - Set Mirror mode (duplicates when open; standalone on lid close)"
 echo -e "  • ${GREEN}display-mode extended${NC} - Set Extended mode (dual screen when open; standalone on lid close)"
 echo -e "  • ${GREEN}display-mode toggle${NC}   - Toggle between modes (or press ${BOLD}Super + Ctrl + Alt + Delete${NC})"
+echo -e "  • ${GREEN}display-mode clamshell on|off|toggle${NC} - Force external-only / restore the laptop panel"
+echo -e "  • ${GREEN}Clamshell bar button${NC}  - Same toggle, one click, right of the Display icon"
 echo -e "\nClose your laptop lid at any time to verify the smooth transition!\n"

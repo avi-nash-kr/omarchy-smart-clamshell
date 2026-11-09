@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "id": "avinash-omarchy.clamshell",
+  "name": "Clamshell",
+  "version": "1.0.0",
+  "author": "avinash-omarchy",
+  "description": "Force external-display-only clamshell mode, or restore the laptop panel, without waiting for a lid-switch event",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "Clamshell.qml"
+  },
+  "barWidget": {
+    "displayName": "Clamshell",
+    "description": "External-display-only toggle",
+    "category": "Display",
+    "allowMultiple": false,
+    "defaultSection": "right"
+  }
+}

@@ -28,6 +28,9 @@ When using a laptop connected to an external monitor on **Omarchy / Hyprland**, 
 * **Persistent Display Mode Switcher (`display-mode`)**:
   * Switch between **Mirror** (duplicate screens) and **Extended** (independent multi-monitor) mode anytime.
   * Your preference is remembered across system restarts.
+* **One-Click Clamshell Toggle (bar widget)**:
+  * A button in the Omarchy bar turns the laptop panel off / back on without waiting for the lid switch.
+  * Shows the live state (accent = external-only) and works exactly like `display-mode clamshell`.
 * **Zero System File Tampering**: Everything installs cleanly in user space (`~/.local/bin/` and `~/.config/`), respecting Omarchy's upgrade path.
 
 ---
@@ -68,7 +71,31 @@ display-mode extended
 
 # Toggle between Mirror and Extended modes
 display-mode toggle
+
+# Force external-display-only clamshell (laptop panel off)
+display-mode clamshell on
+
+# Release it and bring the laptop panel back
+display-mode clamshell off
+
+# Flip it, or just read it
+display-mode clamshell toggle
+display-mode clamshell status
 ```
+
+### Bar Toggle
+
+A **Clamshell** button sits in the bar's right section, just right of the Display
+icon:
+
+* **Monitor icon, accent coloured** — external display only (the laptop panel is off).
+* **Laptop icon, normal colour** — the laptop panel is on.
+* **Left click** toggles between the two. **Middle click** opens the Display panel.
+* Hovering shows the current state.
+
+The button exists because the lid switch is firmware-driven: a resume can leave it
+reporting "open" while the lid is shut, and then no lid event ever arrives. The
+button applies the same state the lid logic would, immediately.
 
 ### Keyboard Shortcut
 
@@ -116,6 +143,10 @@ omarchy-smart-clamshell/
 │   └── bindings.lua.sample                # Sample Hyprland configuration
 ├── hooks/
 │   └── display-mode-sync.sh               # Post-boot desktop sync hook
+├── plugin/
+│   └── clamshell/                         # Omarchy bar widget (on/off toggle)
+│       ├── manifest.json
+│       └── Clamshell.qml
 ├── install.sh                             # Automated installer
 ├── uninstall.sh                           # Clean uninstaller
 ├── LICENSE                                # MIT License

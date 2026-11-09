@@ -7,8 +7,34 @@ CONFIG_FILE="$CONFIG_DIR/display-mode.conf"
 TOGGLES_DIR="$HOME/.local/state/omarchy/toggles/hypr"
 MIRROR_FLAG="$TOGGLES_DIR/internal-monitor-mirror.lua"
 MIRROR_PAUSED_FLAG="$TOGGLES_DIR/internal-monitor-mirror.lua.clamshell-paused"
+CLAMSHELL_FLAG="$TOGGLES_DIR/internal-monitor-clamshell.lua"
+HDMI_FLAG="$TOGGLES_DIR/internal-monitor-clamshell-hdmi.lua"
+DISABLE_FLAG="$TOGGLES_DIR/internal-monitor-disable.lua"
+SCALE_STATE="$TOGGLES_DIR/internal-monitor-scale"
 
 mkdir -p "$CONFIG_DIR"
+
+notify() {
+  command -v omarchy-notification-send >/dev/null 2>&1 && {
+    omarchy-notification-send -g 󰍹 "$1" >/dev/null 2>&1 || true
+  }
+}
+
+# The internal panel is off: either we forced clamshell, the lid logic did, or
+# the user turned it off from the Display panel. Any of them is "external only".
+internal_disabled() {
+  [[ -f $DISABLE_FLAG || -f $CLAMSHELL_FLAG || -f $HDMI_FLAG ]]
+}
+
+internal_output() {
+  command -v omarchy-hyprland-monitor-laptop >/dev/null 2>&1 && omarchy-hyprland-monitor-laptop
+}
+
+external_output() {
+  hyprctl monitors -j 2>/dev/null \
+    | jq -r '.[] | select(.name | test("^(eDP|LVDS|DSI)-") | not) | select(.name != "FALLBACK") | .name' \
+    | head -n 1
+}
 
 current_mode() {
   if [[ -f $MIRROR_FLAG || -f $MIRROR_PAUSED_FLAG ]]; then
@@ -20,7 +46,7 @@ current_mode() {
 
 set_mirror() {
   echo "mode=mirror" > "$CONFIG_FILE"
-  if command -v omarchy-hw-clamshell >/dev/null 2>&1 && omarchy-hw-clamshell; then
+  if internal_disabled || { command -v omarchy-hw-clamshell >/dev/null 2>&1 && omarchy-hw-clamshell; }; then
     # Lid is closed: prepare paused flag so mirror takes effect when lid opens
     if [[ ! -f $MIRROR_PAUSED_FLAG && -f $MIRROR_FLAG ]]; then
       mv -f "$MIRROR_FLAG" "$MIRROR_PAUSED_FLAG"
@@ -71,9 +97,112 @@ status_mode() {
   if [[ -f $CONFIG_FILE ]]; then
     echo "Persisted setting: $(cat "$CONFIG_FILE")"
   fi
+  echo "Clamshell: $(clamshell_status 2>/dev/null || true)"
+}
+
+# --- Clamshell force ---------------------------------------------------------
+# The lid switch is firmware-driven and can lie (a resume can leave it reporting
+# "open" while the lid is shut). These commands let you apply or release the
+# external-only state by hand instead of waiting for a lid event.
+
+clamshell_status() {
+  if internal_disabled; then
+    echo "on"
+    return 0
+  fi
+
+  echo "off"
+  return 1
+}
+
+clamshell_on() {
+  local internal external scale
+  internal=$(internal_output)
+  external=$(external_output)
+
+  if [[ -z $external ]]; then
+    echo "No external monitor connected; refusing to turn off the only display." >&2
+    return 1
+  fi
+
+  if [[ -z $internal ]]; then
+    echo "No internal display found." >&2
+    return 1
+  fi
+
+  if [[ ! $internal =~ ^[A-Za-z0-9._-]+$ || ! $external =~ ^[A-Za-z0-9._-]+$ ]]; then
+    echo "Refusing unsafe monitor name." >&2
+    return 1
+  fi
+
+  mkdir -p "$TOGGLES_DIR"
+
+  # Remember the panel's scale so it returns unchanged when re-enabled.
+  scale=$(hyprctl monitors all -j 2>/dev/null \
+    | jq -r --arg internal "$internal" '.[] | select(.name == $internal and .disabled != true) | .scale' \
+    | head -n 1)
+  if [[ $scale =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+    printf '%s\n' "$scale" > "$SCALE_STATE"
+  fi
+
+  # Stop mirroring first: an external display mirroring the panel that is about
+  # to be disabled is exactly what comes up blank.
+  if [[ -f $MIRROR_FLAG ]]; then
+    mv -f "$MIRROR_FLAG" "$MIRROR_PAUSED_FLAG"
+  fi
+
+  printf 'hl.monitor({ output = "%s", mode = "preferred", position = "0x0" })\n' "$external" > "$HDMI_FLAG"
+  # Omarchy's own manual-disable flag, which both the lid script and the 2 s
+  # clamshell poll honour, so a forced clamshell is not undone by them.
+  printf 'hl.monitor({ output = "%s", disabled = true })\n' "$internal" > "$DISABLE_FLAG"
+
+  hyprctl reload >/dev/null 2>&1 || true
+  notify "Clamshell: external display only"
+  echo "Clamshell: on ($external only)"
+}
+
+clamshell_off() {
+  local lid_closed=0
+  command -v omarchy-hw-laptop-closed >/dev/null 2>&1 && omarchy-hw-laptop-closed && lid_closed=1
+
+  # With the lid shut the panel has nowhere to be seen, and Omarchy's clamshell
+  # poll would switch it straight back off, so releasing here would only flicker.
+  if (( lid_closed )); then
+    notify "Clamshell stays on while the lid is closed"
+    echo "Lid is closed; clamshell stays on."
+    return 0
+  fi
+
+  rm -f "$DISABLE_FLAG" "$CLAMSHELL_FLAG" "$HDMI_FLAG"
+
+  # With the lid open the panel belongs back on screen, so restore the mirror
+  # rule the clamshell paused.
+  if [[ $(current_mode) == mirror && -f $MIRROR_PAUSED_FLAG ]]; then
+    mv -f "$MIRROR_PAUSED_FLAG" "$MIRROR_FLAG"
+  fi
+
+  hyprctl reload >/dev/null 2>&1 || true
+  hyprctl dispatch 'hl.dsp.dpms({ action = "enable" })' >/dev/null 2>&1 || true
+  notify "Clamshell: laptop display restored"
+  echo "Clamshell: off"
+  return 0
 }
 
 case "$1" in
+  clamshell)
+    case "${2:-status}" in
+      on) clamshell_on ;;
+      off) clamshell_off ;;
+      toggle)
+        if clamshell_status >/dev/null 2>&1; then clamshell_off; else clamshell_on; fi
+        ;;
+      status) clamshell_status ;;
+      *)
+        echo "Usage: display-mode clamshell {on|off|toggle|status}" >&2
+        exit 1
+        ;;
+    esac
+    ;;
   mirror|on)
     set_mirror
     ;;
@@ -87,7 +216,7 @@ case "$1" in
     status_mode
     ;;
   *)
-    echo "Usage: display-mode {mirror|extended|toggle|status}"
+    echo "Usage: display-mode {mirror|extended|toggle|status|clamshell {on|off|toggle|status}}"
     exit 1
     ;;
 esac
